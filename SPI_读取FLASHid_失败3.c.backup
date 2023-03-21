@@ -1,0 +1,122 @@
+#include "at32f413_board.h"
+#include "at32f413_clock.h"
+
+void my_spi_init(){
+	gpio_init_type gpio_init_structure;
+	spi_init_type spi_init_structure;
+	
+	/* 时钟 */
+	crm_periph_clock_enable(CRM_SPI1_PERIPH_CLOCK, TRUE);
+	crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
+	/* GPIO */
+	gpio_default_para_init(&gpio_init_structure);
+	gpio_init_structure.gpio_pins = GPIO_PINS_5 | GPIO_PINS_7;		// MOSI CLK
+	gpio_init_structure.gpio_mode = GPIO_MODE_MUX;
+	gpio_init_structure.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+	gpio_init_structure.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+	gpio_init(GPIOA,&gpio_init_structure);
+	
+	gpio_default_para_init(&gpio_init_structure);
+	gpio_init_structure.gpio_pins = GPIO_PINS_6;			// MISO
+	gpio_init_structure.gpio_mode = GPIO_MODE_INPUT;			// 默认浮空输入
+	gpio_init(GPIOA,&gpio_init_structure);
+	
+	gpio_default_para_init(&gpio_init_structure);
+	gpio_init_structure.gpio_pins = GPIO_PINS_4 | GPIO_PINS_3;		// CS（软件控制） PIN3用于追踪
+	gpio_init_structure.gpio_mode = GPIO_MODE_OUTPUT;
+	gpio_init_structure.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+	gpio_init_structure.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+	gpio_init(GPIOA,&gpio_init_structure);
+	
+	gpio_bits_set(GPIOA, GPIO_PINS_4);		// 高电平关闭flash
+	/* SPI */
+	spi_default_para_init(&spi_init_structure);
+	spi_init_structure.mclk_freq_division = SPI_MCLK_DIV_2;
+	spi_init_structure.master_slave_mode = SPI_MODE_MASTER;
+	spi_init_structure.clock_phase = SPI_CLOCK_PHASE_2EDGE;				// 偶数边沿触发
+	spi_init_structure.clock_polarity = SPI_CLOCK_POLARITY_HIGH;		// 高电平空闲
+	spi_init_structure.transmission_mode = SPI_TRANSMIT_FULL_DUPLEX;	// 全双工
+	spi_init_structure.first_bit_transmission = SPI_FIRST_BIT_MSB;		// 大端模式
+	spi_init_structure.frame_bit_num = SPI_FRAME_8BIT;					// 8bit帧
+	spi_init_structure.cs_mode_selection = SPI_CS_SOFTWARE_MODE;		// 软件片选模式
+	
+	spi_init(SPI1, &spi_init_structure);
+	spi_enable(SPI1, TRUE);
+	gpio_bits_set(GPIOA, GPIO_PINS_4 | GPIO_PINS_3);
+}
+
+
+#define timeoutcnt	((uint32_t)(10000))
+#define DUMMY		(0x78)
+// 发送并接收一个数据（接收数据需要同时发送数据，因为这样才能产生时序）
+uint8_t spi_transmit_byte(uint8_t data){
+	uint32_t TIMEOUT = timeoutcnt;
+	
+	// 等待发送缓冲区为空
+	while(spi_i2s_flag_get(SPI1, SPI_I2S_TDBE_FLAG) == RESET){
+		if(TIMEOUT-- == 0){
+			at32_led_on(LED2);
+			return 0;
+		}
+	}
+	// 写入发送缓冲区
+	spi_i2s_data_transmit(SPI1, data);
+	// 通过RXNE判断是否发送完毕
+	while(spi_i2s_flag_get(SPI1, SPI_I2S_RDBF_FLAG) == RESET){
+		if(TIMEOUT-- == 0){
+			at32_led_on(LED2);
+			return 0;
+		}
+	}
+	// 返回接收到的字节
+	return spi_i2s_data_receive(SPI1);
+}
+
+uint8_t spi_receive_byte(void){
+	return spi_transmit_byte(DUMMY);
+}
+
+void spi_cs_enable(void){
+	gpio_bits_reset(GPIOA, GPIO_PINS_4 | GPIO_PINS_3);	// 低电平使能
+}
+
+void spi_cs_disable(void){
+	gpio_bits_set(GPIOA, GPIO_PINS_4 | GPIO_PINS_3);		// 高电平关闭
+}
+
+
+uint32_t spi_read_id(void){
+	spi_cs_enable();
+	spi_transmit_byte(0X9F);
+	printf("id1:%hX\r\n", spi_receive_byte());
+	printf("id2:%hX\r\n", spi_receive_byte());
+	printf("id3:%hX\r\n", spi_receive_byte());
+	spi_cs_disable();
+	return 0;
+}
+
+int main(void)
+{
+	nvic_priority_group_config(NVIC_PRIORITY_GROUP_2); 
+	at32_board_init();
+	uart_print_init(115200);
+	my_spi_init();
+	
+	
+	while(1)
+	{
+		//spi_transmit_byte(0x9f);
+		spi_read_id();
+		delay_ms(100);
+		//spi_cs_enable();
+		
+		// 片选测试
+		while(0){
+			at32_led_toggle(LED3);
+			gpio_bits_set(GPIOA, GPIO_PINS_4);
+			delay_ms(100);
+			gpio_bits_reset(GPIOA, GPIO_PINS_4);
+			delay_ms(100);
+		}
+	}   
+}
